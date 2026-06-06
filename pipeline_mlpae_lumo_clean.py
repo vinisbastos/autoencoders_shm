@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -92,6 +93,7 @@ class Config:
     overlap: int = 0
     bottleneck_size: int = 1200
     max_epochs: int = 5000
+    log_every: int = 10
     learning_rate: float = 1e-3
     batch_size: int = 128
     patience: int = 10
@@ -103,6 +105,7 @@ class Config:
     high_hz: float = 80.0
     filter_order: int = 4
     output_dir: str = "outputs_mlp_ae"
+    
 
 class MLPAutoencoder(nn.Module):
     def __init__(self, input_size: int, bottleneck_size: int):
@@ -244,26 +247,85 @@ def flat_to_3d(x: np.ndarray) -> np.ndarray:
 def train(model, train_arr, val_arr, cfg: Config, dev: torch.device):
     model.to(dev)
     opt = optim.Adam(model.parameters(), lr=cfg.learning_rate)
-    sch = optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=cfg.scheduler_factor, patience=cfg.scheduler_patience)
+    sch = optim.lr_scheduler.ReduceLROnPlateau(
+        opt,
+        mode="min",
+        factor=cfg.scheduler_factor,
+        patience=cfg.scheduler_patience
+    )
     mse = nn.MSELoss()
-    loader = DataLoader(TensorDataset(torch.tensor(train_arr, dtype=torch.float32)), batch_size=cfg.batch_size, shuffle=True)
+
+    loader = DataLoader(
+        TensorDataset(torch.tensor(train_arr, dtype=torch.float32)),
+        batch_size=cfg.batch_size,
+        shuffle=True
+    )
+
     val_t = torch.tensor(val_arr, dtype=torch.float32, device=dev)
     hist, best, best_loss, wait = [], None, np.inf, 0
-    for epoch in range(1, cfg.max_epochs+1):
-        model.train(); losses=[]
+
+    start_time = time.time()
+
+    for epoch in range(1, cfg.max_epochs + 1):
+        model.train()
+        losses = []
+
         for (batch,) in loader:
-            batch = batch.to(dev); opt.zero_grad(); loss = mse(model(batch), batch); loss.backward(); opt.step(); losses.append(loss.item())
+            batch = batch.to(dev)
+            opt.zero_grad()
+            loss = mse(model(batch), batch)
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+
         model.eval()
-        with torch.no_grad(): val_loss = float(mse(model(val_t), val_t).item())
-        tr_loss = float(np.mean(losses)); sch.step(val_loss)
-        hist.append({"epoch": epoch, "train_mse": tr_loss, "val_mse": val_loss})
+        with torch.no_grad():
+            val_loss = float(mse(model(val_t), val_t).item())
+
+        tr_loss = float(np.mean(losses))
+        sch.step(val_loss)
+
+        hist.append({
+            "epoch": epoch,
+            "train_mse": tr_loss,
+            "val_mse": val_loss
+        })
+
         if val_loss < best_loss - 1e-12:
             best_loss, wait = val_loss, 0
-            best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best = {
+                k: v.detach().cpu().clone()
+                for k, v in model.state_dict().items()
+            }
         else:
             wait += 1
-        if wait >= cfg.patience: break
-    if best is not None: model.load_state_dict(best)
+
+        if epoch == 1 or epoch % cfg.log_every == 0:
+            elapsed = time.time() - start_time
+            elapsed_min = int(elapsed // 60)
+            elapsed_sec = int(elapsed % 60)
+
+            print(
+                f"[Epoch {epoch:04d}/{cfg.max_epochs}] "
+                f"train_mse={tr_loss:.6e} | "
+                f"val_mse={val_loss:.6e} | "
+                f"best_val={best_loss:.6e} | "
+                f"wait={wait}/{cfg.patience} | "
+                f"elapsed={elapsed_min:02d}:{elapsed_sec:02d}",
+                flush=True
+            )
+
+        if wait >= cfg.patience:
+            print(
+                f"Early stopping acionado na época {epoch}. "
+                f"Melhor val_mse={best_loss:.6e}",
+                flush=True
+            )
+            break
+
+    if best is not None:
+        model.load_state_dict(best)
+
     return model, pd.DataFrame(hist)
 
 @torch.no_grad()
@@ -338,15 +400,49 @@ def prepare(cfg, data_dir, download):
     return preprocess(tr, tests, float(train_ds["Fs"]), [float(ds["Fs"]) for ds in test_ds], cfg)
 
 def run_one(cfg: Config, data_dir: Path, download: bool, tag: str):
-    set_seed(cfg.seed); dev = device()
+    set_seed(cfg.seed)
+    dev = device()
+
+    print("=" * 80, flush=True)
+    print(f"Iniciando experimento: {tag}", flush=True)
+    print(f"Cenário: {cfg.scenario}", flush=True)
+    print(f"Pré-processamento: {cfg.preprocess}", flush=True)
+    print(f"SL={cfg.sequence_length}, OV={cfg.overlap}, DZ={cfg.bottleneck_size}", flush=True)
+    print(f"Dispositivo: {dev}", flush=True)
+    print("=" * 80, flush=True)
+
+    print("[1/5] Carregando dados e aplicando pré-processamento...", flush=True)
     train_seq, test_seq = prepare(cfg, data_dir, download)
-    tr, val = train_test_split(train_seq, test_size=cfg.validation_size, random_state=cfg.seed, shuffle=True)
-    model = MLPAutoencoder(train_seq.shape[1], cfg.bottleneck_size); model.apply(init_weights)
+
+    print(f"Janelas de treino: {train_seq.shape}", flush=True)
+    for i, seq in enumerate(test_seq, start=1):
+        print(f"Janelas de teste {i}: {seq.shape}", flush=True)
+
+    print("[2/5] Separando treino e validação...", flush=True)
+    tr, val = train_test_split(
+        train_seq,
+        test_size=cfg.validation_size,
+        random_state=cfg.seed,
+        shuffle=True
+    )
+
+    print(f"Treino: {tr.shape} | Validação: {val.shape}", flush=True)
+
+    print("[3/5] Inicializando modelo MLP-AE...", flush=True)
+    model = MLPAutoencoder(train_seq.shape[1], cfg.bottleneck_size)
+    model.apply(init_weights)
+
+    print("[4/5] Treinando modelo...", flush=True)
     model, hist = train(model, tr, val, cfg, dev)
+
+    print("[5/5] Calculando métricas e salvando resultados...", flush=True)
     gdf, mdf, rdf = evaluate(model, train_seq, test_seq, dev)
-    out = Path(cfg.output_dir)/cfg.scenario/tag
+
+    out = Path(cfg.output_dir) / cfg.scenario / tag
     save_outputs(out, tag, cfg, model, hist, gdf, mdf, rdf)
-    print(f"OK: {tag} -> {out}")
+
+    print(f"Experimento concluído. Resultados salvos em: {out}", flush=True)
+    print("=" * 80, flush=True)
 
 def parse_args():
     p = argparse.ArgumentParser(description="Pipeline MLP-AE LUMO")
@@ -356,21 +452,21 @@ def parse_args():
     p.add_argument("--sequence-length", type=int, default=100); p.add_argument("--overlap", type=int, default=0)
     p.add_argument("--bottleneck-size", type=int, default=1200); p.add_argument("--max-epochs", type=int, default=5000)
     p.add_argument("--seed", type=int, default=42); p.add_argument("--data-dir", default="data"); p.add_argument("--output-dir", default="outputs_mlp_ae")
-    p.add_argument("--download", action="store_true")
+    p.add_argument("--download", action="store_true"); p.add_argument("--log-every", type=int, default=10)
     return p.parse_args()
 
 def main():
     a = parse_args(); data_dir = Path(a.data_dir)
     if a.mode == "reference_cp":
         for cp in ["CP1","CP2","CP3","CP4"]:
-            cfg = Config(a.scenario, cp, 100, 0, 1200, max_epochs=a.max_epochs, seed=a.seed, output_dir=a.output_dir)
+            cfg = Config(a.scenario, cp, 100, 0, 1200, max_epochs=a.max_epochs, log_every=a.log_every, seed=a.seed, output_dir=a.output_dir)
             run_one(cfg, data_dir, a.download, f"reference_SL100_OV0_DZ1200_{cp}")
     elif a.mode == "variants":
         for dz in [1200, 12228]:
-            cfg = Config(a.scenario, a.preprocess, 1024, 896, dz, max_epochs=a.max_epochs, seed=a.seed, output_dir=a.output_dir)
+            cfg = Config(a.scenario, a.preprocess, 1024, 896, dz, max_epochs=a.max_epochs, log_every=a.log_every, seed=a.seed, output_dir=a.output_dir)
             run_one(cfg, data_dir, a.download, f"variant_SL1024_OV896_DZ{dz}_{a.preprocess}")
     else:
-        cfg = Config(a.scenario, a.preprocess, a.sequence_length, a.overlap, a.bottleneck_size, max_epochs=a.max_epochs, seed=a.seed, output_dir=a.output_dir)
+        cfg = Config(a.scenario, a.preprocess, a.sequence_length, a.overlap, a.bottleneck_size, max_epochs=a.max_epochs, log_every=a.log_every, seed=a.seed, output_dir=a.output_dir)
         run_one(cfg, data_dir, a.download, f"single_SL{a.sequence_length}_OV{a.overlap}_DZ{a.bottleneck_size}_{a.preprocess}")
 
 if __name__ == "__main__":
