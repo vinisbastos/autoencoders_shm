@@ -2,10 +2,11 @@
 
 Este repositório contém versões limpas e reprodutíveis dos pipelines utilizados na dissertação para detecção e localização de alterações estruturais na estrutura LUMO, a partir de sinais de aceleração e modelos de autoencoder treinados exclusivamente com dados da condição estrutural íntegra de referência.
 
-Atualmente, o repositório contempla duas arquiteturas:
+Atualmente, o repositório contempla três arquiteturas:
 
 - **MLP-AE**: autoencoder de camadas densas, com entrada achatada.
 - **CAE-1D**: autoencoder convolucional unidimensional, com entrada multicanal no formato `(N, 18, T)`.
+- **TCN-AE**: autoencoder baseado em Temporal Convolutional Networks, com blocos convolucionais dilatados e entrada multicanal no formato `(N, 18, T)`.
 
 As métricas exportadas pelos pipelines incluem:
 
@@ -19,8 +20,9 @@ As métricas exportadas pelos pipelines incluem:
 
 ```text
 .
-├── pipeline_mlpae_lumo_clean.py
-├── pipeline_cae1d_lumo_clean.py
+├── pipeline_mlpae_lumo.py
+├── pipeline_cae1d_lumo.py
+├── pipeline_tcnae_lumo.py
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
@@ -67,6 +69,8 @@ torch
 h5py
 gdown
 ```
+
+As três arquiteturas implementadas utilizam apenas essas dependências principais. Bibliotecas exploratórias presentes nos notebooks originais, como `seaborn`, `plotly`, `mplcursors`, `torchinfo` e `graphviz`, não são necessárias para executar os pipelines limpos.
 
 ---
 
@@ -412,9 +416,207 @@ outputs_cae1d/DAM6_3/CAE1D_SL1024_OV896_CP4_2-80Hz/
 
 ---
 
-## 6. Arquivos exportados
+## 6. Pipeline TCN-AE
 
-Tanto o pipeline MLP-AE quanto o pipeline CAE-1D exportam arquivos com o mesmo padrão:
+O arquivo `pipeline_tcnae_lumo_clean.py` implementa o autoencoder baseado em Temporal Convolutional Networks utilizado na dissertação.
+
+Assim como o CAE-1D, o TCN-AE preserva a estrutura multicanal dos sinais e recebe janelas no formato:
+
+```text
+N × 18 × SL
+```
+
+em que:
+
+```text
+N  = número de janelas
+18 = número de canais de aceleração
+SL = comprimento da sequência temporal
+```
+
+### 6.1 Especificidades do TCN-AE
+
+O TCN-AE utiliza blocos convolucionais residuais com dilatações temporais. Essa estrutura amplia o campo receptivo temporal do modelo sem necessidade de aumentar diretamente o tamanho do kernel ou reduzir a resolução temporal por pooling.
+
+Configuração padrão:
+
+```text
+Arquitetura: TCN-AE
+Entrada: N × 18 × 1024
+SL = 1024
+OV = 896
+Pré-processamento = CP4
+```
+
+### 6.2 Pré-processamento do TCN-AE
+
+O TCN-AE utiliza cenário fixo de pré-processamento CP4:
+
+```text
+filtro passa-banda + RobustScaler 3D por sensor
+```
+
+O RobustScaler 3D é ajustado usando apenas o conjunto de treino da condição estrutural íntegra de referência.
+
+### 6.3 Arquitetura TCN-AE
+
+A arquitetura implementada é composta por:
+
+```text
+Conv1d de entrada
+Blocos TCN residuais dilatados
+Bottleneck convolucional 1D
+Blocos TCN residuais no decoder
+Conv1d de saída
+```
+
+Blocos principais:
+
+```text
+Conv1d
+GroupNorm
+ReLU
+Conexão residual
+Dilatação temporal
+```
+
+Configuração padrão:
+
+```text
+hidden_channels = 16
+latent_c = 8
+use_gap = False
+kernel_size = 3 nos blocos TCN
+```
+
+Treinamento padrão:
+
+```text
+optimizer = AdamW
+learning_rate = 3e-3
+weight_decay = 1e-4
+batch_size = 256
+max_epochs = 4000
+patience = 40
+scheduler_patience = 5
+scheduler_factor = 0.5
+gradient_clipping = 1.0
+```
+
+### 6.4 Variantes de dilatação — TCN-AE
+
+O pipeline TCN-AE possui duas variantes principais, selecionadas por meio do argumento `--variant`.
+
+Variante com 5 camadas dilatadas:
+
+```text
+TCN5: dilations = (1, 2, 4, 8, 16)
+```
+
+Variante com 9 camadas dilatadas:
+
+```text
+TCN9: dilations = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+```
+
+### 6.5 Exemplos de iniciação — TCN-AE
+
+Teste rápido do TCN-AE com 5 dilatações:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN5 --max-epochs 2 --log-every 1 --batch-size 64 --download
+```
+
+Teste rápido do TCN-AE com 9 dilatações:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 2 --log-every 1 --batch-size 64 --download
+```
+
+Execução completa do TCN-AE com 5 dilatações:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN5 --max-epochs 4000 --log-every 10 --download
+```
+
+Execução completa do TCN-AE com 9 dilatações:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 4000 --log-every 10 --download
+```
+
+Execução completa com batch reduzido:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 4000 --log-every 10 --batch-size 64 --download
+```
+
+Execução para outro cenário:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM4_1 --variant TCN5 --max-epochs 4000 --log-every 10 --batch-size 64 --download
+```
+
+Execução com limite superior do filtro em 120 Hz:
+
+```bash
+python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN5 --high-hz 120 --download
+```
+
+### 6.6 Execução no Google Colab — TCN-AE
+
+No Google Colab, recomenda-se executar o arquivo `.py` como script.
+
+Teste rápido no Colab com TCN5:
+
+```python
+!python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN5 --max-epochs 2 --log-every 1 --batch-size 64 --download
+```
+
+Teste rápido no Colab com TCN9:
+
+```python
+!python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 2 --log-every 1 --batch-size 64 --download
+```
+
+Execução completa no Colab com TCN5:
+
+```python
+!python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN5 --max-epochs 4000 --log-every 10 --batch-size 256 --download
+```
+
+Execução completa no Colab com TCN9:
+
+```python
+!python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 4000 --log-every 10 --batch-size 256 --download
+```
+
+Execução completa no Colab com batch reduzido:
+
+```python
+!python pipeline_tcnae_lumo_clean.py --scenario DAM6_3 --variant TCN9 --max-epochs 4000 --log-every 10 --batch-size 64 --download
+```
+
+### 6.7 Saídas do TCN-AE
+
+Os resultados do TCN-AE são gravados em:
+
+```text
+outputs_tcnae/<cenario>/<experimento>/
+```
+
+Exemplos:
+
+```text
+outputs_tcnae/DAM6_3/TCNAE_TCN5_SL1024_OV896_CP4_2-80Hz/
+outputs_tcnae/DAM6_3/TCNAE_TCN9_SL1024_OV896_CP4_2-80Hz/
+```
+
+---
+
+## 7. Arquivos exportados
+
+Os pipelines MLP-AE, CAE-1D e TCN-AE exportam arquivos com o mesmo padrão:
 
 ```text
 *_config.json
@@ -438,14 +640,14 @@ Descrição dos arquivos:
 
 ---
 
-## 7. Logs de treinamento
+## 8. Logs de treinamento
 
 Os pipelines exibem mensagens de progresso no terminal.
 
 Exemplo:
 
 ```text
-[Epoch 0010/3500] train_mse=... | val_mse=... | best_val=... | wait=... | elapsed=...
+[Epoch 0010/4000] train_mse=... | val_mse=... | best_val=... | wait=... | elapsed=...
 ```
 
 A frequência de exibição pode ser controlada por:
@@ -470,7 +672,23 @@ mostra o progresso a cada 10 épocas.
 
 ---
 
-## 8. Observação terminológica
+## 9. Observação sobre o limite superior do filtro
+
+Os pipelines CAE-1D e TCN-AE foram padronizados para CP4 com filtro passa-banda de:
+
+```text
+2–80 Hz
+```
+
+Entretanto, versões exploratórias dos notebooks originais utilizaram limite superior de 120 Hz. Para reproduzir esse comportamento, utilize:
+
+```bash
+--high-hz 120
+```
+
+---
+
+## 10. Observação terminológica
 
 Os termos “referência íntegra”, “condição íntegra” e “alteração estrutural” descrevem exclusivamente a condição física da estrutura durante a aquisição dos sinais.
 
@@ -478,7 +696,7 @@ Esses termos não indicam qualquer comprometimento, corrupção ou inconsistênc
 
 ---
 
-## 9. Arquivos não versionados
+## 11. Arquivos não versionados
 
 Os seguintes diretórios e arquivos não devem ser versionados no GitHub:
 
@@ -487,6 +705,7 @@ Os seguintes diretórios e arquivos não devem ser versionados no GitHub:
 data/
 outputs_mlp_ae/
 outputs_cae1d/
+outputs_tcnae/
 *.mat
 *.pt
 __pycache__/
@@ -496,7 +715,7 @@ Recomenda-se manter essas entradas no arquivo `.gitignore`.
 
 ---
 
-## 10. Fluxo básico com Git
+## 12. Fluxo básico com Git
 
 Após alterações no código ou documentação:
 
@@ -508,3 +727,4 @@ git push
 ```
 
 Antes de usar `git add .`, recomenda-se verificar se arquivos grandes, dados experimentais ou outputs não estão sendo adicionados ao versionamento.
+``
