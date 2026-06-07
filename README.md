@@ -14,7 +14,7 @@ The metrics exported by the pipelines include:
 - **quadratic Mahalanobis distance**, `MD²`, both global and per level;
 - **global coefficient of determination**, `R²`.
 
-Please cite this work as "Bastos, Vinicius Silveira. Aplicação de modelos de aprendizado de máquina para detecção de danos estruturais em um mastro treliçado de benchmark. 2026. 107 f. Dissertação (Mestrado Profissional em Instrumentação, Controle e Automação de Processos de Mineração) - Escola de Minas, Universidade Federal de Ouro Preto, Ouro Preto, 2025."
+Please cite this work as "Bastos, Vinicius Silveira. Aplicação de modelos de aprendizado de máquina para detecção de danos estruturais em um mastro treliçado de benchmark. 2026. 108 f. Dissertação (Mestrado Profissional em Instrumentação, Controle e Automação de Processos de Mineração) - Escola de Minas, Universidade Federal de Ouro Preto, Ouro Preto, 2025."
 
 ---
 
