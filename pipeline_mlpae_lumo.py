@@ -1,7 +1,4 @@
 
-"""
-pipeline_mlpae_lumo.py
-"""
 
 from __future__ import annotations
 

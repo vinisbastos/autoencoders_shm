@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-pipeline_tcnae_lumo_clean.py
 
-Escopo:
-- TCN Autoencoder com blocos residuais dilatados;
-- Duas variantes principais de dilatação:
-    TCN5: (1, 2, 4, 8, 16)
-    TCN9: (1, 2, 4, 8, 16, 32, 64, 128, 256)
-- Entrada multicanal no formato (N, 18, T);
-- Pré-processamento CP4 fixo: filtro Butterworth passa-banda + RobustScaler 3D por sensor;
-- Métricas utilizadas na dissertação: RCOV por nível, MD² global/por nível e R² global.
-
-"""
 
 from __future__ import annotations
 
@@ -199,64 +187,46 @@ def accelerometers(ds: dict) -> Tuple[np.ndarray, List[str]]:
 
 
 def bandpass(x: np.ndarray, fs: float, low: float, high: float, order: int) -> np.ndarray:
-    """Filtro Butterworth passa-banda sensor por sensor, com saída float32."""
-    x = np.asarray(x, dtype=np.float32)
-    sos = signal.butter(order, [low / (0.5 * fs), high / (0.5 * fs)], btype="bandpass", output="sos")
-    for sensor_idx in range(x.shape[0]):
-        x[sensor_idx, :] = signal.sosfiltfilt(sos, x[sensor_idx, :]).astype(np.float32)
-    return x
+    b, a = signal.butter(order, [low / (0.5 * fs), high / (0.5 * fs)], btype="bandpass")
+    return signal.filtfilt(b, a, x, axis=1)
 
 
 def windows_3d(x: np.ndarray, sl: int, ov: int) -> np.ndarray:
+    """Cria janelas no formato (N, 18, SL), sem janela parcial no final."""
     if not 0 <= ov < sl:
         raise ValueError("overlap deve ser 0 <= overlap < sequence_length")
     step = sl - ov
-    starts = range(0, x.shape[1] - sl + 1, step)
+    n_sensors, n_samples = x.shape
+    starts = range(0, n_samples - sl + 1, step)
     out = [x[:, start:start + sl] for start in starts]
     if not out:
         raise ValueError("Nenhuma janela criada.")
     return np.asarray(out, dtype=np.float32)
 
 
-def fit_robust_scaler_from_signal(train_x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Ajusta mediana e IQR por sensor a partir do sinal filtrado contínuo."""
-    train_x = np.asarray(train_x, dtype=np.float32)
-    n_sensors = train_x.shape[0]
-    q50 = np.empty(n_sensors, dtype=np.float32)
-    iqr = np.empty(n_sensors, dtype=np.float32)
-    for sensor_idx in range(n_sensors):
-        values = train_x[sensor_idx, :]
-        q25_s, q50_s, q75_s = np.percentile(values, [25, 50, 75])
-        q50[sensor_idx] = q50_s
-        iqr[sensor_idx] = max(q75_s - q25_s, 1e-8)
-    return q50, iqr
+def fit_robust_scaler_3d(train_seq: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Ajusta mediana e IQR por sensor usando treino íntegro."""
+    q50 = np.median(train_seq, axis=(0, 2))
+    q25 = np.percentile(train_seq, 25, axis=(0, 2))
+    q75 = np.percentile(train_seq, 75, axis=(0, 2))
+    iqr = np.maximum(q75 - q25, 1e-8)
+    return q50.astype(np.float32), iqr.astype(np.float32)
 
 
 def apply_robust_scaler_3d(seq: np.ndarray, q50: np.ndarray, iqr: np.ndarray) -> np.ndarray:
-    seq = np.asarray(seq, dtype=np.float32)
-    for sensor_idx in range(seq.shape[1]):
-        seq[:, sensor_idx, :] -= q50[sensor_idx]
-        seq[:, sensor_idx, :] /= iqr[sensor_idx]
-    return seq
+    return ((seq - q50[None, :, None]) / iqr[None, :, None]).astype(np.float32)
 
 
-def preprocess_train(train_x, fs_train, cfg: Config):
-    print("Aplicando filtro no conjunto de treino...", flush=True)
+def preprocess(train_x, test_xs, fs_train, fs_tests, cfg: Config):
+    """Aplica CP4: filtro passa-banda + robust scaling 3D por sensor."""
     train_x = bandpass(train_x, fs_train, cfg.low_hz, cfg.high_hz, cfg.filter_order)
-    print("Ajustando RobustScaler 3D no sinal contínuo de treino...", flush=True)
-    q50, iqr = fit_robust_scaler_from_signal(train_x)
-    print("Segmentando conjunto de treino...", flush=True)
+    test_xs = [bandpass(x, fs, cfg.low_hz, cfg.high_hz, cfg.filter_order) for x, fs in zip(test_xs, fs_tests)]
     train_seq = windows_3d(train_x, cfg.sequence_length, cfg.overlap)
-    print("Aplicando RobustScaler 3D no conjunto de treino segmentado...", flush=True)
+    test_seq = [windows_3d(x, cfg.sequence_length, cfg.overlap) for x in test_xs]
+    q50, iqr = fit_robust_scaler_3d(train_seq)
     train_seq = apply_robust_scaler_3d(train_seq, q50, iqr)
-    return train_seq, q50, iqr
-
-
-def preprocess_test(test_x, fs_test, q50, iqr, cfg: Config):
-    test_x = bandpass(test_x, fs_test, cfg.low_hz, cfg.high_hz, cfg.filter_order)
-    test_seq = windows_3d(test_x, cfg.sequence_length, cfg.overlap)
-    test_seq = apply_robust_scaler_3d(test_seq, q50, iqr)
-    return test_seq
+    test_seq = [apply_robust_scaler_3d(x, q50, iqr) for x in test_seq]
+    return train_seq, test_seq
 
 
 # =============================================================================
@@ -512,6 +482,7 @@ def save_outputs(out, tag, cfg, model, hist, gdf, mdf, rdf):
 
 def prepare(cfg, data_dir, download):
     data_dir = Path(data_dir)
+
     if download:
         train_path, test_paths = download_files(cfg.scenario, data_dir)
     else:
@@ -521,6 +492,7 @@ def prepare(cfg, data_dir, download):
         if missing:
             raise FileNotFoundError(f"Arquivos ausentes: {missing}. Use --download.")
 
+
     print("Lendo conjunto de treino...", flush=True)
     train_ds = read_mat(train_path)
     train_x, _ = accelerometers(train_ds)
@@ -528,22 +500,35 @@ def prepare(cfg, data_dir, download):
     del train_ds
     gc.collect()
 
-    train_seq, q50, iqr = preprocess_train(train_x, fs_train, cfg)
-    del train_x
-    gc.collect()
+  
+    test_xs = []
+    fs_tests = []
 
-    test_seq = []
     for i, test_path in enumerate(test_paths, start=1):
-        print(f"Lendo e processando conjunto de teste {i}...", flush=True)
+        print(f"Lendo conjunto de teste {i}...", flush=True)
         test_ds = read_mat(test_path)
         test_x, _ = accelerometers(test_ds)
         fs_test = float(test_ds["Fs"])
-        del test_ds
+
+        test_xs.append(test_x)
+        fs_tests.append(fs_test)
+
+        del test_ds, test_x
         gc.collect()
-        seq = preprocess_test(test_x, fs_test, q50, iqr, cfg)
-        test_seq.append(seq)
-        del test_x, seq
-        gc.collect()
+
+    print("Aplicando pré-processamento (CP4)...", flush=True)
+
+    train_seq, test_seq = preprocess(
+        train_x,
+        test_xs,
+        fs_train,
+        fs_tests,
+        cfg
+    )
+
+    del train_x, test_xs
+    gc.collect()
+
     return train_seq, test_seq
 
 

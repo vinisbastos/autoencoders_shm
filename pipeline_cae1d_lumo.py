@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-pipeline_cae1d_lumo_clean.py
 
-Escopo:
-- Modelo CAE-1D profundo sem conexões residuais/skip;
-- Entrada multicanal no formato (N, 18, T), preservando sensores e tempo;
-- Pré-processamento CP4: filtro Butterworth passa-banda + RobustScaler 3D por sensor;
-
-"""
 
 from __future__ import annotations
 
