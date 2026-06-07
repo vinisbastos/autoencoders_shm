@@ -1,5 +1,9 @@
 
 
+"""
+Authors: Vinicius Silveira Bastos, Eduardo Jose da Silva Luz, Adrielle de Carvalho Santana
+"""
+
 from __future__ import annotations
 
 import argparse
