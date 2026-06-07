@@ -35,7 +35,7 @@ Please cite this work as "Bastos, Vinicius Silveira. Aplicação de modelos de a
     └── DAM6_3_Test_6.mat
 ```
 
-The `data/` folder is used locally to store `.mat` files from the LUMO dataset. This folder should not be versioned on GitHub.
+The `data/` folder is used locally to store `.mat` files from the LUMO dataset. This folder is not versioned on this repository.
 
 ---
 
