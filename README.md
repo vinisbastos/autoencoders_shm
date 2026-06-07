@@ -1,4 +1,4 @@
-# Autoencoder Pipelines — LUMO SHM
+# Autoencoder Pipelines — LUMO Benchmark SHM
 
 This repository contains clean and reproducible versions of the pipelines used in the dissertation for detection and localization of structural changes in the LUMO structure, based on acceleration signals and autoencoder models trained exclusively using data from the healthy structural reference condition.
 
